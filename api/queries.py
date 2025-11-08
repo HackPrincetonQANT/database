@@ -1,46 +1,93 @@
-# api/queries.py
+import os
 
-INSERT_TXN = """
-INSERT INTO transactions
-(id,user_id,transaction_id,merchant,amount_cents,currency,category,need_or_want,confidence,occurred_at)
-VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+DB = os.getenv("SNOWFLAKE_DATABASE", "SNOWFLAKE_LEARNING_DB")
+SC = os.getenv("SNOWFLAKE_SCHEMA", "BALANCEIQ_CORE")
+
+T_TXN = f'{DB}.{SC}.TRANSACTIONS'
+T_REPLY = f'{DB}.{SC}.USER_REPLIES'
+T_PRED = f'{DB}.{SC}.PREDICTIONS'
+
+# ---------- READS ----------
+SQL_HEALTH = "SELECT CURRENT_USER() U, CURRENT_ROLE() R, CURRENT_WAREHOUSE() W, CURRENT_DATABASE() D, CURRENT_SCHEMA() S"
+
+SQL_FEED = f"""
+SELECT *
+FROM {T_TXN}
+WHERE USER_ID = %(user_id)s
+ORDER BY OCCURRED_AT DESC
+LIMIT %(limit)s
 """
 
-# Note: no LIMIT here; we append it safely in code as a literal integer
-GET_FEED_BASE = """
-SELECT * FROM transactions
-WHERE user_id = %s
-ORDER BY occurred_at DESC
-"""
-
-UPSERT_REPLY = """
-INSERT INTO user_replies (id,transaction_id,user_id,user_label,received_at)
-VALUES (%s,%s,%s,%s,%s)
-"""
-
-LATEST_REPLY = """
-SELECT * FROM user_replies
-WHERE transaction_id = %s
-ORDER BY received_at DESC, created_at DESC
-LIMIT 1
-"""
-
-LATEST_PREDICTIONS = """
-SELECT * FROM predictions
-WHERE user_id = %s
-ORDER BY created_at DESC, window_end DESC
-"""
-
-# We will compute cutoff_ts in Python and bind it
-RECENT_CATEGORY_STATS = """
+SQL_STATS_BY_CATEGORY = f"""
 SELECT
-  category,
-  COUNT(*) AS txn_count,
-  AVG(IFF(need_or_want='want',1,0)) AS want_rate,
-  SUM(amount_cents) AS total_cents
-FROM transactions
-WHERE user_id = %s
-  AND occurred_at >= %s
-GROUP BY category
-ORDER BY total_cents DESC
+  CATEGORY,
+  COUNT(*)                                   AS TXN_COUNT,
+  AVG(CASE WHEN NEED_OR_WANT = 'want' THEN 1 ELSE 0 END) AS WANT_RATE,
+  SUM(AMOUNT_CENTS)                           AS TOTAL_CENTS
+FROM {T_TXN}
+WHERE USER_ID = %(user_id)s
+  AND OCCURRED_AT >= DATEADD('day', -%(days)s, CURRENT_TIMESTAMP())
+GROUP BY CATEGORY
+ORDER BY TOTAL_CENTS DESC
+"""
+
+SQL_PREDICTIONS = f"""
+SELECT *
+FROM {T_PRED}
+WHERE USER_ID = %(user_id)s
+ORDER BY CREATED_AT DESC
+"""
+
+# ---------- UPSERTS ----------
+# Named binding with Python connector (pyformat style) is supported.
+SQL_MERGE_TXN = f"""
+MERGE INTO {T_TXN} AS tgt
+USING (
+  SELECT
+    %(id)s               AS ID,
+    %(user_id)s          AS USER_ID,
+    %(transaction_id)s   AS TRANSACTION_ID,
+    %(merchant)s         AS MERCHANT,
+    %(amount_cents)s     AS AMOUNT_CENTS,
+    %(currency)s         AS CURRENCY,
+    %(category)s         AS CATEGORY,
+    %(need_or_want)s     AS NEED_OR_WANT,
+    %(confidence)s       AS CONFIDENCE,
+    TO_TIMESTAMP_TZ(%(occurred_at)s) AS OCCURRED_AT
+) AS s
+ON tgt.ID = s.ID
+WHEN MATCHED THEN UPDATE SET
+  USER_ID=s.USER_ID, TRANSACTION_ID=s.TRANSACTION_ID, MERCHANT=s.MERCHANT,
+  AMOUNT_CENTS=s.AMOUNT_CENTS, CURRENCY=s.CURRENCY, CATEGORY=s.CATEGORY,
+  NEED_OR_WANT=s.NEED_OR_WANT, CONFIDENCE=s.CONFIDENCE, OCCURRED_AT=s.OCCURRED_AT
+WHEN NOT MATCHED THEN INSERT (
+  ID,USER_ID,TRANSACTION_ID,MERCHANT,AMOUNT_CENTS,CURRENCY,
+  CATEGORY,NEED_OR_WANT,CONFIDENCE,OCCURRED_AT,CREATED_AT
+) VALUES (
+  s.ID,s.USER_ID,s.TRANSACTION_ID,s.MERCHANT,s.AMOUNT_CENTS,s.CURRENCY,
+  s.CATEGORY,s.NEED_OR_WANT,s.CONFIDENCE,s.OCCURRED_AT,CURRENT_TIMESTAMP()
+);
+"""
+
+SQL_MERGE_REPLY = f"""
+MERGE INTO {T_REPLY} AS tgt
+USING (
+  SELECT
+    %(id)s             AS ID,
+    %(transaction_id)s AS TRANSACTION_ID,
+    %(user_id)s        AS USER_ID,
+    %(user_label)s     AS USER_LABEL,
+    TO_TIMESTAMP_TZ(%(received_at)s) AS RECEIVED_AT
+) AS s
+ON tgt.ID = s.ID
+WHEN MATCHED THEN UPDATE SET
+  TRANSACTION_ID=s.TRANSACTION_ID,
+  USER_ID=s.USER_ID,
+  USER_LABEL=s.USER_LABEL,
+  RECEIVED_AT=s.RECEIVED_AT
+WHEN NOT MATCHED THEN INSERT (
+  ID,TRANSACTION_ID,USER_ID,USER_LABEL,RECEIVED_AT,CREATED_AT
+) VALUES (
+  s.ID,s.TRANSACTION_ID,s.USER_ID,s.USER_LABEL,s.RECEIVED_AT,CURRENT_TIMESTAMP()
+);
 """

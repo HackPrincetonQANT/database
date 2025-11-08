@@ -44,7 +44,7 @@ curl -s "http://127.0.0.1:8000/stats/category?user_id=u_demo_min&days=30" | jq
 Predictions
 curl -s "http://127.0.0.1:8000/predictions?user_id=u_demo_min" | jq
 
- Insert / Update a Transaction
+Insert / Update a Transaction
 curl -s -X POST http://127.0.0.1:8000/transactions \
   -H "content-type: application/json" \
   -d @samples/txn_sample.json | jq
@@ -64,3 +64,11 @@ curl -s -X POST http://127.0.0.1:8000/transactions \
   "occurred_at": "2025-11-07T13:05:00-08:00"
 }
 ```
+
+### checklist
+	•	Tables exist in SNOWFLAKE_LEARNING_DB.BALANCEIQ_CORE
+	•	Seed data loaded
+	•	/feed, /stats/category, /predictions return JSON
+	•	/transactions and /reply POST work
+	•	.env.example + README included
+	•	Sample JSON outputs saved under samples/
